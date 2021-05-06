@@ -1,0 +1,18 @@
+{
+  "gpu": "0,1,2",
+  "resume": false,
+
+  "train_type": "naive",
+
+  "total_epoch": 100,
+  "scheduler": "step",
+  "batch_size": 128,
+
+  "ddp": false,
+  "pin_memory": true,
+  "mixed_precision": false,
+
+  "early": false,
+  "patience": 10000,
+  "early_criterion_loss": false
+}
