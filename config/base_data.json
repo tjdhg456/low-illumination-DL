@@ -1,4 +1,4 @@
 {
-  "data_type": "LOL",
-  "data_dir": "/data/sung/dataset",
-  "num_classes": 201}
+  "data_dir": "/data/sung/dataset/low-illumination-dataset",
+  "num_classes": 13
+}

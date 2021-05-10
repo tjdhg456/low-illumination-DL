@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from .ssd_utils import *
+import torch.nn.init as init
 import os
 
 
@@ -102,6 +103,7 @@ class SSD(nn.Module):
                              self.num_classes)),                # conf preds
                 self.priors.type(type(x.data))                  # default boxes
             )
+
         else:
             output = (
                 loc.view(loc.size(0), -1, 4),
@@ -110,6 +112,16 @@ class SSD(nn.Module):
             )
         return output
 
+    # Initialize
+    def initialize(self):
+        def weights_init(m):
+            if isinstance(m, nn.Conv2d):
+                init.xavier_normal_(m.weight.data)
+                init.constant_(m.bias.data, 0.0)
+
+        self.extras.apply(weights_init)
+        self.loc.apply(weights_init)
+        self.conf.apply(weights_init)
 
     # Hook
     def get_features(self, _, inputs, outputs):
@@ -121,11 +133,11 @@ class SSD(nn.Module):
     def get_hook(self, target_layers):
         for name, param in self.backbone.named_children():
             if name in target_layers:
-                setattr(self, '%s_hook_detector' %name, param.register_forward_hook(self.get_features))
+                setattr(self, 'hook_detector_%s' %name, param.register_forward_hook(self.get_features))
 
     def remove_hook(self, target_layers):
         for name in target_layers:
-            getattr(self, '%s_hook_detector' %name).remove()
+            getattr(self, 'hook_detector_%s' %name).remove()
 
 
 # This function is derived from torchvision VGG make_layers()

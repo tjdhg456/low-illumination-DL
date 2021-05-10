@@ -3,6 +3,7 @@ import torch
 from tqdm import tqdm
 import os
 from utility.distributed import apply_gradient_allreduce, reduce_tensor
+from copy import deepcopy
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
@@ -21,7 +22,7 @@ def accuracy(output, target, topk=(1,)):
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
-def train(option, rank, epoch, model, criterion, optimizer, tr_loader, scaler, save_module, neptune, save_folder):
+def robust_train(option, rank, epoch, model, criterion, optimizer, tr_loader, scaler, save_module, neptune, save_folder, save_robust):
     num_gpu = len(option.result['train']['gpu'].split(','))
     multi_gpu = num_gpu > 1
 
@@ -47,25 +48,27 @@ def train(option, rank, epoch, model, criterion, optimizer, tr_loader, scaler, s
         else:
             # Extract High Features
             if multi_gpu:
+                model.module.clear_features()
                 _ = model.module.feature_extract(high_img)
                 high_features = model.module.features
                 high_feats, high_ids = model.module.sample_patch(high_features)
             else:
+                model.clear_features()
                 _ = model.feature_extract(high_img)
                 high_features = model.features
                 high_feats, high_ids = model.sample_patch(high_features)
 
-
             # Extract Low Features
             if multi_gpu:
+                model.module.clear_features()
                 _ = model.module.feature_extract(low_img)
                 low_features = model.module.features
                 low_feats, _ = model.module.sample_patch(low_features, high_ids)
             else:
+                model.clear_features()
                 _ = model.feature_extract(low_img)
                 low_features = model.features
                 low_feats, _ = model.sample_patch(low_features, high_ids)
-
 
             # Update Loss
             for ix in range(len(high_feats)):
@@ -73,7 +76,6 @@ def train(option, rank, epoch, model, criterion, optimizer, tr_loader, scaler, s
                     loss = criterion(low_feats[ix], high_feats[ix])
                 else:
                     loss += criterion(low_feats[ix], high_feats[ix])
-                print(loss)
 
             loss.backward()
             optimizer.step()
@@ -86,139 +88,238 @@ def train(option, rank, epoch, model, criterion, optimizer, tr_loader, scaler, s
     # Train Result
     mean_loss /= len(tr_loader)
 
-    # Saving Network Params
-    if multi_gpu:
-        model_param = model.module.state_dict()
-    else:
-        model_param = model.state_dict()
-
-    save_module.save_dict['model'] = [model_param]
-    save_module.save_dict['optimizer'] = [optimizer.state_dict()]
-    save_module.save_dict['save_epoch'] = epoch
-
     if (rank == 0) or (rank == 'cuda'):
-        # Loggin
-        print('Epoch-(%d/%d) - tr_loss:%.3f' %(epoch, option.result['train']['total_epoch'], mean_loss))
-        neptune.log_metric('tr_loss', mean_loss)
+        # Logging
+        print('Epoch-(%d/%d) - tr_robust_loss:%.3f' %(epoch, option.result['train']['total_epoch'], mean_loss))
+        neptune.log_metric('tr_robust_loss', mean_loss)
 
-        # Save
-        if epoch % option.result['train']['save_epoch'] == 0:
-            torch.save(model_param, os.path.join(save_folder, 'epoch%d_model.pt' %epoch))
+        if save_robust:
+            # Saving Network Params
+            if multi_gpu:
+                model_param = model.module.state_dict()
+            else:
+                model_param = model.state_dict()
+
+            # Update Save Module
+            save_module.save_dict['model'] = [model_param]
+            save_module.save_dict['optimizer'] = [optimizer.state_dict()]
+            save_module.save_dict['save_epoch'] = epoch
+
+            # Save Params at save_epoch
+            if epoch % option.result['train']['save_epoch'] == 0:
+                torch.save(model_param, os.path.join(save_folder, 'epoch%d_model.pt' %epoch))
 
     return model, optimizer, save_module
 
 
-def validation(option, rank, epoch, model, criterion, val_loader, neptune):
+def detection_train(option, rank, epoch, model, criterion, optimizer, tr_loader, type, scaler, save_module, neptune, save_folder, save_detection=False):
     num_gpu = len(option.result['train']['gpu'].split(','))
+    multi_gpu = num_gpu > 1
 
     # For Log
     mean_loss = 0.
-    mean_acc1 = 0.
-    mean_acc5 = 0.
 
-    with torch.no_grad():
-        for val_data in tqdm(val_loader):
-            input, label = val_data
-            input, label = input.to(rank), label.to(rank)
+    for tr_data in tqdm(tr_loader):
+        tr_img, tr_target = tr_data
 
-            output = model(input)
-            loss = criterion(output, label)
+        # To GPU
+        tr_img = tr_img.to(rank)
+        with torch.no_grad():
+            tr_target = [ann.to(rank) for ann in tr_target]
 
-            acc_result = accuracy(output, label, topk=(1, 5))
+        # Backprop
+        optimizer.zero_grad()
 
-            if (num_gpu > 1) and (option.result['train']['ddp']):
-                mean_loss += reduce_tensor(loss.data, num_gpu).item()
-                mean_acc1 += reduce_tensor(acc_result[0], num_gpu)
-                mean_acc5 += reduce_tensor(acc_result[1], num_gpu)
-
+        # Update Optimizer
+        if scaler is not None:
+            pass
+            # with torch.cuda.amp.autocast():
+            #     output = model(input)
+            #     loss = criterion(output, label)
+            #
+            #     scaler.scale(loss).backward()
+            #     scaler.step(optimizer)
+            #     scaler.update()
+        else:
+            # Forward
+            if multi_gpu:
+                model.module.detector.clear_features()
             else:
-                mean_loss += loss.item()
-                mean_acc1 += acc_result[0]
-                mean_acc5 += acc_result[1]
+                model.detector.clear_features()
 
-        # Train Result
-        mean_acc1 /= len(val_loader)
-        mean_acc5 /= len(val_loader)
-        mean_loss /= len(val_loader)
+            out = model(tr_img)
+            loss_l, loss_c = criterion(out, tr_target)
 
+            # Total Loss
+            loss = loss_l + loss_c
+
+            # Back Prop
+            loss.backward()
+            optimizer.step()
+
+        if (num_gpu > 1) and (option.result['train']['ddp']):
+            mean_loss += reduce_tensor(loss.data, num_gpu).item()
+        else:
+            mean_loss += loss.item()
+
+    # Train Result
+    mean_loss /= len(tr_loader)
+
+    if (rank == 0) or (rank == 'cuda'):
         # Logging
-        if (rank == 0) or (rank == 'cuda'):
-            print('Epoch-(%d/%d) - val_ACC@1: %.2f, val_ACC@5-%.2f, val_loss:%.3f' % (epoch, option.result['train']['total_epoch'], \
-                                                                                    mean_acc1, mean_acc5, mean_loss))
-            neptune.log_metric('val_loss', mean_loss)
-            neptune.log_metric('val_acc1', mean_acc1)
-            neptune.log_metric('val_acc5', mean_acc5)
-            neptune.log_metric('epoch', epoch)
+        print('Epoch-(%d/%d) - (%s) tr_detection_loss:%.3f' %(epoch, option.result['train']['total_epoch'], type, mean_loss))
+        neptune.log_metric('%s_tr_detection_loss' %type, mean_loss)
 
-    result = {'acc1':mean_acc1, 'acc5':mean_acc5, 'val_loss':mean_loss}
-    return result
+        if save_detection:
+            # Saving Network Params
+            if multi_gpu:
+                model_param = model.module.state_dict()
+            else:
+                model_param = model.state_dict()
 
-def test():
-    pass
+            # Update Save Module
+            save_module.save_dict['model'] = [model_param]
+            save_module.save_dict['optimizer'] = [optimizer.state_dict()]
+            save_module.save_dict['save_epoch'] = epoch
+
+            # Save Params at save_epoch
+            if epoch % option.result['train']['save_epoch'] == 0:
+                torch.save(model_param, os.path.join(save_folder, 'epoch%d_model.pt' %epoch))
+
+    return model, optimizer, save_module
 
 
-def run(option, model, tr_loader, val_loader, optimizer, criterion, scaler, scheduler, early, \
-        save_folder, save_module, multi_gpu, rank, neptune):
+def run(option, model, tr_robust_loader, tr_coco_loader, tr_ex_loader, val_robust_loader, val_coco_loader, val_ex_loader,
+        optimizer, patch_criterion, detection_criterion, scaler, scheduler, early, save_folder, save_module, multi_gpu, rank, neptune):
+
+    # Training Type
+    last = ''
+    if tr_robust_loader is not None:
+        robust = True
+        last = 'robust'
+    else:
+        robust = False
+
+    if tr_coco_loader is not None:
+        coco = True
+        last = 'coco'
+    else:
+        coco = False
+
+    if tr_ex_loader is not None:
+        ex = True
+        last = 'ex'
+    else:
+        ex = False
+
 
     # Get Hook
     target_layers = option.result['train']['target_layers']
     if multi_gpu:
-        model.module.get_hook(target_layers)
-        model.module.detector.get_hook(target_layers)
+        if robust:
+            model.module.get_hook(target_layers)
+        if coco or ex:
+            model.module.detector.get_hook(target_layers=['23'])
     else:
-        model.get_hook(target_layers)
-        model.detector.get_hook(target_layers)
+        if robust:
+            model.get_hook(target_layers)
+        if coco or ex:
+            model.detector.get_hook(target_layers=['23'])
 
+
+    # Trainer
     for epoch in range(save_module.init_epoch, save_module.total_epoch):
+        # Training
         model.train()
-        model, optimizer, save_module = train(option, rank, epoch, model, criterion, optimizer,
-                                              tr_loader, scaler, save_module, neptune, save_folder)
 
-        model.eval()
-        result = validation(option, rank, epoch, model, criterion, val_loader, neptune)
-
-        if scheduler is not None:
-            scheduler.step()
-            save_module.save_dict['scheduler'] = [scheduler.state_dict()]
-        else:
-            save_module.save_dict['scheduler'] = None
-
-        # Save the last-epoch module
-        if (rank == 0) or (rank == 'cuda'):
-            save_module_path = os.path.join(save_folder, 'last_dict.pt')
-            save_module.export_module(save_module_path)
-
-            save_config_path = os.path.join(save_folder, 'last_config.json')
-            option.export_config(save_config_path)
-
-        # Early Stopping
-        if multi_gpu:
-            param = deepcopy(model.module.state_dict())
-        else:
-            param = deepcopy(model.state_dict())
-
-        if early is not None:
-            if option.result['train']['early_loss']:
-                early(result['val_loss'], param, result)
+        if robust:
+            if last == 'robust':
+                save_robust = True
             else:
-                early(-result['acc1'], param, result)
+                save_robust = False
 
-            if early.early_stop == True:
-                break
+            model, optimizer, save_module = robust_train(option, rank, epoch, model, patch_criterion, optimizer,
+                                                         tr_robust_loader, scaler, save_module, neptune, save_folder, save_robust=save_robust)
+        if coco:
+            if last == 'coco':
+                save_coco = True
+            else:
+                save_coco = False
 
-    # Remove Hook
-    if multi_gpu:
-        model.module.remove_hook(target_layers)
-        model.module.detector.remove_hook(target_layers)
-    else:
-        model.remove_hook(target_layers)
-        model.detector.remove_hook(target_layers)
+            model, optimizer, save_module = detection_train(option, rank, epoch, model, detection_criterion, optimizer,
+                                                            tr_coco_loader, 'coco', scaler, save_module, neptune, save_folder, save_detection=save_coco)
+        if ex:
+            if last == 'ex':
+                save_ex = True
+            else:
+                save_ex = False
 
-    # Save the Model
-    if (rank == 0) or (rank == 'cuda'):
-        if early is not None:
-            torch.save(early.model, os.path.join(save_folder, 'best_model.pt'))
-        else:
-            totch.save(model, os.path.join(save_folder, 'best_model.pt'))
-    return early, save_module, option
+            model, optimizer, save_module = detection_train(option, rank, epoch, model, detection_criterion, optimizer,
+                                                            tr_ex_loader, 'ex', scaler, save_module, neptune, save_folder, save_detection=save_ex)
+
+        # Validation
+        model.eval()
+    #
+    #     if robust and detection:
+    #         _ = robust_validation(option, rank, epoch, model, criterion, val_robust_loader, neptune)
+    #         result = detection_validation(option, rank, epoch, model, criterion, val_detection_loader, neptune)
+    #     elif robust and (not detection):
+    #         result = robust_validation(option, rank, epoch, model, criterion, val_robust_loader, neptune)
+    #     elif (not robust) and detection:
+    #         result = detection_validation(option, rank, epoch, model, criterion, val_detection_loader, neptune)
+    #     else:
+    #         raise('Select Proper Train Type')
+    #
+    #
+    #     # Scheduler
+    #     if scheduler is not None:
+    #         scheduler.step()
+    #         save_module.save_dict['scheduler'] = [scheduler.state_dict()]
+    #     else:
+    #         save_module.save_dict['scheduler'] = None
+    #
+    #
+    #     # Save the last-epoch module
+    #     if (rank == 0) or (rank == 'cuda'):
+    #         save_module_path = os.path.join(save_folder, 'last_dict.pt')
+    #         save_module.export_module(save_module_path)
+    #
+    #         save_config_path = os.path.join(save_folder, 'last_config.json')
+    #         option.export_config(save_config_path)
+    #
+    #
+    #     # Early Stopping
+    #     if multi_gpu:
+    #         param = deepcopy(model.module.state_dict())
+    #     else:
+    #         param = deepcopy(model.state_dict())
+    #
+    #     if early is not None:
+    #         if option.result['train']['early_loss']:
+    #             early(result['val_loss'], param, result)
+    #         else:
+    #             early(-result['acc1'], param, result)
+    #
+    #         if early.early_stop == True:
+    #             break
+    #
+    # # Remove Hook
+    # if multi_gpu:
+    #     if robust:
+    #         model.module.remove_hook(target_layers)
+    #     if detection:
+    #         model.module.detector.remove_hook(target_layers=['23'])
+    # else:
+    #     if robust:
+    #         model.remove_hook(target_layers)
+    #     if detection:
+    #         model.detector.remove_hook(target_layers=['23'])
+    #
+    # # Save the Model
+    # if (rank == 0) or (rank == 'cuda'):
+    #     if early is not None:
+    #         torch.save(early.model, os.path.join(save_folder, 'best_model.pt'))
+    #     else:
+    #         totch.save(model, os.path.join(save_folder, 'best_model.pt'))
+    # return early, save_module, option
 

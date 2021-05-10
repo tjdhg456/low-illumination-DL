@@ -14,7 +14,7 @@ from module.load_module import load_model, load_loss, load_optimizer, load_sched
 from utility.utils import config, train_module
 from utility.earlystop import EarlyStopping
 
-from data.dataset import load_data
+from data.dataset import load_data, detection_collate
 
 from copy import deepcopy
 import torch.distributed as dist
@@ -57,8 +57,8 @@ def main(rank, option, resume, save_folder):
 
     # Load Model
     model = load_model(option)
-    criterion = load_loss(option)
-    save_module = train_module(total_epoch, model, criterion, multi_gpu)
+    patch_criterion, detection_criterion = load_loss(option, rank)
+    save_module = train_module(total_epoch, model, patch_criterion, detection_criterion, multi_gpu)
 
     if resume:
         save_module.import_module(resume_path)
@@ -74,7 +74,8 @@ def main(rank, option, resume, save_folder):
         model = DDP(model, device_ids=[rank])
 
         model = apply_gradient_allreduce(model)
-        criterion.to(rank)
+        patch_criterion.to(rank)
+        detection_criterion.to(rank)
 
     else:
         if multi_gpu:
@@ -108,24 +109,94 @@ def main(rank, option, resume, save_folder):
 
 
     # Dataset and DataLoader
-    tr_dataset = load_data(option, type='train')
-    val_dataset = load_data(option, type='val')
+    tr_robust_dataset, tr_coco_dataset, tr_ex_dataset = load_data(option, type='train')
+    val_robust_dataset, val_coco_dataset, val_ex_dataset = load_data(option, type='val')
 
     if ddp:
-        tr_sampler = torch.utils.data.distributed.DistributedSampler(dataset=tr_dataset,
-                                                                     num_replicas=num_gpu, rank=rank)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(dataset=val_dataset,
-                                                                     num_replicas=num_gpu, rank=rank)
+        # Robust Dataset Loader
+        if tr_robust_dataset is not None:
+            tr_robust_sampler = torch.utils.data.distributed.DistributedSampler(dataset=tr_robust_dataset,
+                                                                         num_replicas=num_gpu, rank=rank)
+            val_robust_sampler = torch.utils.data.distributed.DistributedSampler(dataset=val_robust_dataset,
+                                                                         num_replicas=num_gpu, rank=rank)
 
-        tr_loader = torch.utils.data.DataLoader(dataset=tr_dataset, batch_size=batch_size,
-                                                  shuffle=False, num_workers=4*num_gpu, pin_memory=pin_memory,
-                                                  sampler=tr_sampler)
-        val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size,
-                                                  shuffle=False, num_workers=4*num_gpu, pin_memory=pin_memory,
-                                                  sampler=val_sampler)
+
+            tr_robust_loader = torch.utils.data.DataLoader(dataset=tr_robust_dataset, batch_size=batch_size,
+                                                      shuffle=False, num_workers=4*num_gpu, pin_memory=pin_memory,
+                                                      sampler=tr_robust_sampler)
+            val_robust_loader = torch.utils.data.DataLoader(dataset=val_robust_dataset, batch_size=batch_size,
+                                                      shuffle=False, num_workers=4*num_gpu, pin_memory=pin_memory,
+                                                      sampler=val_robust_sampler)
+        else:
+            tr_robust_loader = None
+            val_robust_loader = None
+
+        # Detection-COCO-Dark-Dataset Loader
+        if tr_coco_dataset is not None:
+            tr_coco_sampler = torch.utils.data.distributed.DistributedSampler(dataset=tr_coco_dataset,
+                                                                                num_replicas=num_gpu, rank=rank)
+
+            val_coco_sampler = torch.utils.data.distributed.DistributedSampler(dataset=val_coco_dataset,
+                                                                                 num_replicas=num_gpu, rank=rank)
+
+            tr_coco_loader = torch.utils.data.DataLoader(dataset=tr_coco_dataset, batch_size=batch_size,
+                                                           shuffle=False, num_workers=4 * num_gpu,
+                                                           pin_memory=pin_memory,
+                                                           sampler=tr_coco_sampler, collate_fn=detection_collate)
+            val_coco_loader = torch.utils.data.DataLoader(dataset=val_coco_dataset, batch_size=batch_size,
+                                                            shuffle=False, num_workers=4 * num_gpu,
+                                                            pin_memory=pin_memory,
+                                                            sampler=val_coco_sampler, collate_fn=detection_collate)
+        else:
+            tr_coco_loader = None
+            val_coco_loader = None
+
+
+        # Detection-EX-Dark-Dataset Loader
+        if tr_ex_dataset is not None:
+            tr_ex_sampler = torch.utils.data.distributed.DistributedSampler(dataset=tr_ex_dataset,
+                                                                                num_replicas=num_gpu, rank=rank)
+
+            val_ex_sampler = torch.utils.data.distributed.DistributedSampler(dataset=val_ex_dataset,
+                                                                                 num_replicas=num_gpu, rank=rank)
+
+            tr_ex_loader = torch.utils.data.DataLoader(dataset=tr_ex_dataset, batch_size=batch_size,
+                                                           shuffle=False, num_workers=4 * num_gpu,
+                                                           pin_memory=pin_memory,
+                                                           sampler=tr_ex_sampler, collate_fn=detection_collate)
+            val_ex_loader = torch.utils.data.DataLoader(dataset=val_ex_dataset, batch_size=batch_size,
+                                                            shuffle=False, num_workers=4 * num_gpu,
+                                                            pin_memory=pin_memory,
+                                                            sampler=val_ex_sampler, collate_fn=detection_collate)
+        else:
+            tr_ex_loader = None
+            val_ex_loader = None
+
+
     else:
-        tr_loader = DataLoader(tr_dataset, batch_size=batch_size, shuffle=True, pin_memory=pin_memory, num_workers=4*num_gpu)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, num_workers=4*num_gpu)
+        # Robust Dataset Loader
+        if tr_robust_dataset is not None:
+            tr_robust_loader = DataLoader(tr_robust_dataset, batch_size=batch_size, shuffle=True, pin_memory=pin_memory, num_workers=4*num_gpu)
+            val_robust_loader = DataLoader(val_robust_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, num_workers=4*num_gpu)
+        else:
+            tr_robust_loader = None
+            val_robust_loader = None
+
+        # Detection-COCO-Dark-Dataset Loader
+        if tr_coco_dataset is not None:
+            tr_coco_loader = DataLoader(tr_coco_dataset, batch_size=batch_size, shuffle=True, pin_memory=pin_memory, num_workers=4 * num_gpu, collate_fn=detection_collate)
+            val_coco_loader = DataLoader(val_coco_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, num_workers=4 * num_gpu, collate_fn=detection_collate)
+        else:
+            tr_coco_loader = None
+            val_coco_loader = None
+
+        # Detection-EX-Dark-Dataset Loader
+        if tr_ex_dataset is not None:
+            tr_ex_loader = DataLoader(tr_ex_dataset, batch_size=batch_size, shuffle=True, pin_memory=pin_memory, num_workers=4 * num_gpu, collate_fn=detection_collate)
+            val_ex_loader = DataLoader(val_ex_dataset, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, num_workers=4 * num_gpu, collate_fn=detection_collate)
+        else:
+            tr_ex_loader = None
+            val_ex_loader = None
 
 
     # Mixed Precision
@@ -137,12 +208,11 @@ def main(rank, option, resume, save_folder):
 
 
     # Training
-    if option.result['train']['train_type'] == 'robust':
-        from module.trainer import robust_trainer
-        early, save_module, option = robust_trainer.run(option, model, tr_loader, val_loader, \
-                                                        optimizer, criterion, scaler, scheduler, \
-                                                        early, save_folder, save_module, multi_gpu, \
-                                                        rank, neptune)
+    from module.trainer import robust_trainer
+    early, save_module, option = robust_trainer.run(option, model, tr_robust_loader, tr_coco_loader, tr_ex_loader, \
+                                                    val_robust_loader, val_coco_loader, val_ex_loader, optimizer, \
+                                                    patch_criterion, detection_criterion, scaler, scheduler, early, \
+                                                    save_folder, save_module, multi_gpu, rank, neptune)
 
     if ddp:
         cleanup()
@@ -177,7 +247,9 @@ if __name__=='__main__':
             option.result['train']['gpu'] = gpu
 
     # Data Directory
-    option.result['data']['data_dir'] = os.path.join(option.result['data']['data_dir'], option.result['data']['data_type'])
+    option.result['data']['robust_dir'] = os.path.join(option.result['data']['data_dir'], 'LOL')
+    option.result['data']['coco-d_dir'] = os.path.join(option.result['data']['data_dir'], 'coco_dark')
+    option.result['data']['ex-d_dir'] = os.path.join(option.result['data']['data_dir'], 'coco_exdark')
 
     # GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = option.result['train']['gpu']

@@ -49,10 +49,11 @@ class config():
 
 
 class train_module():
-    def __init__(self, total_epoch, network, criterion, multi_gpu=False):
+    def __init__(self, total_epoch, network, patch_criterion, detection_criterion, multi_gpu=False):
         self.total_epoch = total_epoch
         self.save_dict = {'network': network,
-                          'criterion': criterion,
+                          'patch_criterion': patch_criterion,
+                          'detection_criterion': detection_criterion,
                           'model': [],
                           'optimizer': [],
                           'scheduler': None,
@@ -83,22 +84,3 @@ class train_module():
 
     def export_module(self, save_path):
         torch.save(self.save_dict, save_path)
-
-
-class examplar_module():
-    def __init__(self):
-        self.examplar_images = []
-        self.examplar_features = []
-
-    def import_examplar(self, load_path_images, load_path_features):
-        self.examplar_images = torch.load(load_path_images)
-        self.examplar_features = torch.load(load_path_features)
-
-    def update_examplar(self, examplar_images, examplar_features):
-        self.examplar_images = examplar_images
-        self.examplar_features = examplar_features
-
-    def export_examplar(self, save_path_images, save_path_features):
-        torch.save(self.examplar_images, save_path_images)
-        torch.save(self.examplar_features, save_path_features)
-

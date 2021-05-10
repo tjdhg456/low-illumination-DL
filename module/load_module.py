@@ -3,22 +3,29 @@ import torch.nn as nn
 from .network import IL_RobustNet, backbone_extractor, backbone_split
 from .layers.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 from .loss import PatchNCELoss
+
+from ssd_module.ssd import build_ssd
+from ssd_module.ssd_utils.multibox_loss import MultiBoxLoss
 from copy import deepcopy
 import torch
 
-def load_model(option):
+def load_model(option, phase='train'):
     train_option = option.result['train']
-
-    # Select Backbone
-    backbone = backbone_extractor(resnet18(), target_layer='avgpool')
+    network_type = option.result['network']['network_type']
 
     # Select Detector Head
-    detector = None
+    if network_type == 'ssd':
+        detector = build_ssd(option, phase, num_classes=option.result['data']['num_classes'], size=300)
+        detector.initialize()
+    else:
+        raise('Select Proper Detector Type')
+
+    # Construct Model
     model = IL_RobustNet(option, detector)
 
-    if train_option['train_type'] == 'robust' and train_option['use_mlp']:
+    if 'robust' in train_option['train_type'] and train_option['use_mlp']:
         target_list = train_option['target_layers']
-        target_channel_dict = {'layer1':64, 'layer2':128, 'layer3':256, 'layer4':512}
+        target_channel_dict = {'0': 64, '5': 128, '10': 256, '17': 512}
         target_channel_list = [target_channel_dict[target] for target in target_list]
 
         model.create_path_mlp(channels=target_channel_list)
@@ -53,12 +60,22 @@ def load_scheduler(option, optimizer):
 
     return scheduler
 
-def load_loss(option):
+def load_loss(option, rank):
     train_type = option.result['train']['train_type']
-    if train_type == 'robust':
-        criterion = PatchNCELoss(option)
-    else:
-        raise('select proper train_type')
+    num_classes = option.result['data']['num_classes']
+    variance = option.result['detector']['variance']
 
-    return criterion
+    # Robust Dataset
+    if 'robust' in train_type:
+        patch_criterion = PatchNCELoss(option)
+    else:
+        patch_criterion = None
+
+    # Detection-COCO-Dataset
+    if ('coco-d' in train_type) or ('ex-d' in train_type):
+        detection_criterion = MultiBoxLoss(num_classes, 0.5, True, 0, True, 3, 0.5, False, variance, rank)
+    else:
+        detection_criterion = None
+
+    return patch_criterion, detection_criterion
 

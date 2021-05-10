@@ -59,7 +59,7 @@ class IL_RobustNet(nn.Module):
         self.detector = detector
         self.features = []
 
-        if self.option.result['train']['train_type'] == 'robust':
+        if 'robust' in self.option.result['train']['train_type']:
             self.patch_sampler = PatchSampler(use_mlp=option.result['train']['use_mlp'])
 
     # Patch Sampler
@@ -72,12 +72,10 @@ class IL_RobustNet(nn.Module):
 
     # Forward
     def feature_extract(self, input):
-        self.clear_features()
         feature = self.detector.backbone(input)
         return feature
 
     def forward(self, input):
-        self.detector.clear_features()
         out = self.detector(input)
         return out
 
@@ -92,11 +90,11 @@ class IL_RobustNet(nn.Module):
     def get_hook(self, target_layers):
         for name, param in self.detector.backbone.named_children():
             if name in target_layers:
-                setattr(self, '%s_hook' %name, param.register_forward_hook(self.get_features))
+                setattr(self, 'hook_%s' %name, param.register_forward_hook(self.get_features))
 
     def remove_hook(self, target_layers):
         for name in target_layers:
-            getattr(self, '%s_hook' %name).remove()
+            getattr(self, 'hook_%s' %name).remove()
 
 
 

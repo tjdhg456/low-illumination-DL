@@ -44,9 +44,10 @@ if __name__=='__main__':
         comb_list = []
 
         num_per_gpu = 1
-        gpus = ['0,1,2']
-        train_list = ['robust']
+        gpus = ['0']
+        train_list = ['coco-d']
         optimizer_type = 'sgd'
+        detector = 'ssd'
 
         # Resume Option
         resume = False
@@ -86,9 +87,10 @@ if __name__=='__main__':
 
             # Modify the train configuration
             train_type = str(comb_ix[0])
-            json_train_path = '../config/base_train_%s.json' %train_type
+            json_train_path = '../config/base_train_robust.json'
             json_train = load_json(json_train_path)
 
+            json_train['train_type'] = train_type
             json_train['resume'] = resume
             json_train['gpu'] = str(gpu)
             save_json(json_train, os.path.join(save_dir, exp_name, str(exp_num), 'train.json'))
@@ -104,6 +106,11 @@ if __name__=='__main__':
             json_meta['server'] = str(server)
             json_meta['save_dir'] = str(save_dir)
             save_json(json_meta, os.path.join(save_dir, exp_name, str(exp_num), 'meta.json'))
+
+            # Modify the Detector Configuration
+            json_detector_path = '../config/base_%s.json' %detector
+            json_detector = load_json(json_detector_path)
+            save_json(json_detector, os.path.join(save_dir, exp_name, str(exp_num), 'detector.json'))
 
 
             # Run !

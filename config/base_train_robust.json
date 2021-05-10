@@ -2,10 +2,10 @@
   "gpu": "0,1,2",
   "resume": false,
 
-  "train_type": "robust",
+  "train_type": "coco-d",
   "use_mlp": false,
   "temperature": 0.01,
-  "target_layers": ["layer1", "layer2", "layer3", "layer4"],
+  "target_layers": ["0", "5", "10", "17"],
   "num_patches": 64,
 
   "save_epoch": 1,

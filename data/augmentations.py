@@ -219,7 +219,7 @@ class RandomSampleCrop(object):
             labels (Tensor): the class labels for each bbox
     """
     def __init__(self):
-        self.sample_options = (
+        self.sample_options = np.array([
             # using entire original input image
             None,
             # sample a patch s.t. MIN jaccard w/ obj in .1,.3,.4,.7,.9
@@ -228,8 +228,8 @@ class RandomSampleCrop(object):
             (0.7, None),
             (0.9, None),
             # randomly sample a patch
-            (None, None),
-        )
+            (None, None)
+        ], dtype=object)
 
     def __call__(self, image, boxes=None, labels=None):
         height, width, _ = image.shape
@@ -395,6 +395,21 @@ class PhotometricDistort(object):
             distort = Compose(self.pd[1:])
         im, boxes, labels = distort(im, boxes, labels)
         return self.rand_light_noise(im, boxes, labels)
+
+
+class BaseTransform:
+    def __init__(self, size, mean):
+        self.size = size
+        self.mean = np.array(mean, dtype=np.float32)
+
+    def base_transform(self, image, size, mean):
+        x = cv2.resize(image, (size, size)).astype(np.float32)
+        x -= mean
+        x = x.astype(np.float32)
+        return x
+
+    def __call__(self, image, boxes=None, labels=None):
+        return self.base_transform(image, self.size, self.mean), boxes, labels
 
 
 class SSDAugmentation(object):

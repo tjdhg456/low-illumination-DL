@@ -1,13 +1,4 @@
-from module.layers.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 import torch
-
-# model = resnet18()
-#
-# x = torch.zeros([1, 3, 256, 256])
-#
-#
-# print(getattr(model, 'layer4'))
-
 
 class option(object):
     def __init__(self):
@@ -27,8 +18,5 @@ option = option()
 from ssd_module.ssd import build_ssd
 model = build_ssd(option, phase='train')
 
-model.get_hook(['23'])
-x = torch.zeros([1, 3, 300, 300])
-
-print(model(x))
+print(model.backbone)
 
