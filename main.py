@@ -50,7 +50,7 @@ def main(rank, option, resume, save_folder):
 
     # Logger
     if (rank == 0) or (rank == 'cuda'):
-        neptune.init('sunghoshin/test', api_token='eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vdWkubmVwdHVuZS5haSIsImFwaV91cmwiOiJodHRwczovL3VpLm5lcHR1bmUuYWkiLCJhcGlfa2V5IjoiYzdlYWFkMjctOWExMS00YTRlLWI0MWMtY2FhNmIyNzZlYTIyIn0=')
+        neptune.init('sunghoshin/imp', api_token='eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI5MTQ3MjY2Yy03YmM4LTRkOGYtOWYxYy0zOTk3MWI0ZDY3M2MifQ==')
         exp_name, exp_num = save_folder.split('/')[-2], save_folder.split('/')[-1]
         neptune.create_experiment(params={'exp_name':exp_name, 'exp_num':exp_num},
                                   tags=['inference:False'])
@@ -72,8 +72,8 @@ def main(rank, option, resume, save_folder):
 
         model.to(rank)
         model = DDP(model, device_ids=[rank])
-        model = apply_gradient_allreduce(model)
 
+        model = apply_gradient_allreduce(model)
         criterion.to(rank)
 
     else:
@@ -99,11 +99,17 @@ def main(rank, option, resume, save_folder):
             scheduler = load_scheduler(option, optimizer)
 
     # Early Stopping
-    early = EarlyStopping(patience=option.result['train']['patience'])
+    early_stop = option.result['train']['early']
+
+    if early_stop:
+        early = EarlyStopping(patience=option.result['train']['patience'])
+    else:
+        early = None
+
 
     # Dataset and DataLoader
-    tr_dataset = load_data(option, data_type='train')
-    val_dataset = load_data(option, data_type='val')
+    tr_dataset = load_data(option, type='train')
+    val_dataset = load_data(option, type='val')
 
     if ddp:
         tr_sampler = torch.utils.data.distributed.DistributedSampler(dataset=tr_dataset,
@@ -131,51 +137,12 @@ def main(rank, option, resume, save_folder):
 
 
     # Training
-    if option.result['train_type'] == 'naive':
-        from module.trainer import naive_trainer
-        for epoch in range(save_module.init_epoch, save_module.total_epoch):
-            model.train()
-            model, optimizer, save_module = naive_trainer.train(option, rank, epoch, model, criterion, optimizer, \
-                                                                tr_loader, scaler, save_module, neptune, save_folder)
-
-            model.eval()
-            result = naive_trainer.validation(option, rank, epoch, model, criterion, val_loader, neptune)
-
-            if scheduler is not None:
-                scheduler.step()
-                save_module.save_dict['scheduler'] = [scheduler.state_dict()]
-            else:
-                save_module.save_dict['scheduler'] = None
-
-
-            # Save the last-epoch module
-            if (rank == 0) or (rank == 'cuda'):
-                save_module_path = os.path.join(save_folder, 'last_dict.pt')
-                save_module.export_module(save_module_path)
-
-                save_config_path = os.path.join(save_folder, 'last_config.json')
-                option.export_config(save_config_path)
-
-
-            # Early Stopping
-            if multi_gpu:
-                param = deepcopy(model.module.state_dict())
-            else:
-                param = deepcopy(model.state_dict())
-
-            if option.result['train']['early_loss']:
-                early(result['val_loss'], param, result)
-            else:
-                early(-result['acc1'], param, result)
-
-            if early.early_stop == True:
-                break
-
-
-        if (rank == 0) or (rank == 'cuda'):
-            # Save the best_model
-            torch.save(early.model, os.path.join(save_folder, 'best_model.pt'))
-
+    if option.result['train']['train_type'] == 'robust':
+        from module.trainer import robust_trainer
+        early, save_module, option = robust_trainer.run(option, model, tr_loader, val_loader, \
+                                                        optimizer, criterion, scaler, scheduler, \
+                                                        early, save_folder, save_module, multi_gpu, \
+                                                        rank, neptune)
 
     if ddp:
         cleanup()
@@ -191,9 +158,7 @@ if __name__=='__main__':
     save_folder = os.path.join(args.save_dir, args.exp_name, str(args.exp_num))
     os.makedirs(save_folder, exist_ok=True)
     option = config(save_folder)
-    option.get_config_data()
-    option.get_config_network()
-    option.get_config_train()
+    option.get_all_config()
 
     # Resume Configuration
     resume = option.result['train']['resume']
@@ -213,7 +178,6 @@ if __name__=='__main__':
 
     # Data Directory
     option.result['data']['data_dir'] = os.path.join(option.result['data']['data_dir'], option.result['data']['data_type'])
-
 
     # GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = option.result['train']['gpu']

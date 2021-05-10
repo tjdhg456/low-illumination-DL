@@ -3,5 +3,10 @@
   "weight_decay": 1e-5,
   "lr": 0.1,
   "momentum": 0.0,
-  "nesterov": false
+  "nesterov": false,
+
+
+
+    "lr_steps": [280000, 360000, 400000],
+    "max_iter": 400000
 }

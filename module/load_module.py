@@ -2,17 +2,27 @@ import torch
 import torch.nn as nn
 from .network import IL_RobustNet, backbone_extractor, backbone_split
 from .layers.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
+from .loss import PatchNCELoss
 from copy import deepcopy
 import torch
 
 def load_model(option):
+    train_option = option.result['train']
+
     # Select Backbone
     backbone = backbone_extractor(resnet18(), target_layer='avgpool')
-    backbone_1, backbone_2 = backbone_split(backbone, 'layer1')
 
     # Select Detector Head
     detector = None
-    model = IL_RobustNet(backbone_1, backbone_2, detector)
+    model = IL_RobustNet(option, detector)
+
+    if train_option['train_type'] == 'robust' and train_option['use_mlp']:
+        target_list = train_option['target_layers']
+        target_channel_dict = {'layer1':64, 'layer2':128, 'layer3':256, 'layer4':512}
+        target_channel_list = [target_channel_dict[target] for target in target_list]
+
+        model.create_path_mlp(channels=target_channel_list)
+
     return model
 
 
@@ -45,8 +55,8 @@ def load_scheduler(option, optimizer):
 
 def load_loss(option):
     train_type = option.result['train']['train_type']
-    if train_type == 'naive':
-        criterion = nn.CrossEntropyLoss()
+    if train_type == 'robust':
+        criterion = PatchNCELoss(option)
     else:
         raise('select proper train_type')
 

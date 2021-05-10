@@ -1,5 +1,4 @@
 {
-  "data_type": "cifar100",
-  "data_dir": "/home/sung/dataset",
-  "num_class": 100
-}
+  "data_type": "LOL",
+  "data_dir": "/data/sung/dataset",
+  "num_classes": 201}

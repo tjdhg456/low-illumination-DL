@@ -2,7 +2,13 @@
   "gpu": "0,1,2",
   "resume": false,
 
-  "train_type": "naive",
+  "train_type": "robust",
+  "use_mlp": false,
+  "temperature": 0.01,
+  "target_layers": ["layer1", "layer2", "layer3", "layer4"],
+  "num_patches": 64,
+
+  "save_epoch": 1,
 
   "total_epoch": 100,
   "scheduler": "step",
@@ -14,5 +20,5 @@
 
   "early": false,
   "patience": 10000,
-  "early_criterion_loss": false
+  "early_loss": false
 }
